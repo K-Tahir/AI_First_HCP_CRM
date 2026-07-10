@@ -10,6 +10,103 @@ understood and saved.
 
 ---
 
+# AIVOA CRM — Setup & Run Guide
+Two servers run side by side: 
+The backend (FastAPI, port 8000) and the frontend (React/Vite, port 5173). 
+# Start the backend first.
+# Prerequisites
+ToolVersionCheck withPython3.11 or 3.12python --versionNode.js18+node --versionnpmcomes with Nodenpm --versionGroq API keyfreeconsole.groq.com/keys
+No database install needed to start — it defaults to a zero-setup SQLite file.
+
+# Step 1 — Clone the repo
+- bashgit clone <your-github-repo-url>
+- cd <repo-folder-name>
+You should see two top-level folders: backend/ and frontend/.
+
+# Step 2 — Backend setup
+- bashcd backend
+- Create and activate a virtual environment:
+- bash# Windows (PowerShell)
+- python -m venv .venv
+- .venv\Scripts\Activate.ps1
+
+# macOS / Linux
+- python3 -m venv .venv
+- source .venv/bin/activate
+- You'll know it worked because your terminal prompt now starts with (.venv).
+- Install dependencies:
+- bashpip install -r requirements.txt
+- Set up your environment file:
+- bash# Windows
+- copy .env.example .env
+
+# macOS / Linux
+- cp .env.example .env
+- Open backend/.env in an editor and paste your real key into this one line:
+- GROQ_API_KEY=your_actual_key_here
+- Everything else in .env already has working defaults (SQLite database, current Groq models) — leave the rest as-is for now.
+- Start the backend:
+- bashuvicorn app.main:app --reload --port 8000
+- Confirm it's working — watch the terminal for a startup banner like:
+======================================================================
+  AIVOA backend starting | BUILD_MARKER=...
+  Groq model  : raw='openai/gpt-oss-20b' -> resolved='openai/gpt-oss-20b'
+  GROQ_API_KEY set: True (len=56)
+  Database    : sqlite:///./aivoa_crm.db
+======================================================================
+INFO:     Application startup complete.
+Then open http://localhost:8000/docs in a browser — you should see the interactive Swagger API docs. If that loads, the backend is healthy. Keep this terminal running.
+
+# Step 3 — Frontend setup
+- Open a new terminal window (leave the backend running in the first one).
+- bashcd frontend
+- Install dependencies:
+- bashnpm install
+- Set up the environment file:
+- bash# Windows
+- copy .env.example .env
+
+# macOS / Linux
+- cp .env.example .env
+- Check that frontend/.env points at your backend (it should already, by default):
+- VITE_API_BASE_URL=http://localhost:8000/api/v1
+- Start the frontend:
+- bashnpm run dev
+- It will print a local URL, typically:
+- Local:   http://localhost:5173/
+- Open that in your browser.
+
+# Step 4 — Test it end-to-end
+In the chat panel (right side), type:
+Today I met Dr. Smith at City Hospital and discussed Product X. The sentiment was positive and I shared brochures.
+Expected result: the AI replies with a short confirmation, and the left "Interaction Details" panel automatically fills in — HCP name, hospital, product, sentiment, brochures shared — with no manual clicking into any field.
+Try a correction next:
+- Actually the doctor's name was Dr. John and the sentiment was negative.
+- Only those two fields on the left panel should change; everything else stays the same.
+Then try:
+Show me history for Dr. John
+This should render as a proper table (not raw text) below the chat.
+
+# Troubleshooting
+- Symptom: Frontend loads but chat gives a network error
+- Likely cause / fix: Backend isn't running, or 'VITE_API_BASE_URL' port doesn't match the backend's --port
+- Symptom: GROQ_API_KEY is not set error
+- Likely cause / fix: You forgot to paste the key into backend/.env, or didn't restart uvicorn after adding it
+- Symptom: pip install fails on a package
+- Likely cause / fix: Confirm the virtual environment is activated ((.venv) should be visible in the prompt) before installing
+- Symptom: Port 8000 or 5173 already in use
+- Likely cause / fix: Something else is already running there — kill it, or start uvicorn with a different --port and update VITE_API_BASE_URL to match
+- Symptom: CORS error in browser console
+- Likely cause / fix: Check CORS_ORIGINS in backend/.env includes the exact frontend URL/port you're using
+- Symptom: Left form doesn't update after a chat message
+- Likely cause / fix: Open the browser console for JS errors first; also confirm the backend terminal shows POST /api/v1/chat returning 200 OK
+- Symptom: http://localhost:8000/debug/groq-config
+- Likely cause / fix: Open this directly in a browser any time to see exactly what config the running backend sees — model, whether the API key is present, database URL. Useful if something seems off.
+
+# Stopping the app
+- In each terminal, press Ctrl+C. Deactivate the Python virtual environment with deactivate if needed.
+_________________________________________________________________________________________________________
+_________________________________________________________________________________________________________
 ## 1. Assignment Objective
 
 Build the Log Interaction Screen for an AI-first CRM HCP module:
