@@ -1,0 +1,12 @@
+fastapi
+uvicorn
+pydantic
+pydantic-settings
+SQLAlchemy
+PyMySQL
+cryptography
+langgraph
+langchain-core
+langchain-groq
+python-dotenv
+python-multipart
