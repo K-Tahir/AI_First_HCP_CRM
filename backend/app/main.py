@@ -31,7 +31,7 @@ async def lifespan(app: FastAPI):
         f"  Groq model  : raw='{settings.GROQ_MODEL}' -> resolved='{_resolve_model(settings.GROQ_MODEL)}'\n"
         f"  Groq fallback: raw='{settings.GROQ_FALLBACK_MODEL}' -> resolved='{_resolve_model(settings.GROQ_FALLBACK_MODEL)}'\n"
         f"  GROQ_API_KEY set: {bool(settings.GROQ_API_KEY)} (len={len(settings.GROQ_API_KEY)})\n"
-        f"  Database    : {settings.DATABASE_URL}\n"
+        f"  Database    : {settings.redacted_database_url}\n"
         f"{'=' * 70}"
     )
     # print() as well as logger.info(): guarantees visibility even if a
@@ -39,7 +39,7 @@ async def lifespan(app: FastAPI):
     print(startup_banner)
     logger.info(startup_banner)
     init_db()
-    logger.info("Database ready at %s", settings.DATABASE_URL)
+    logger.info("Database ready at %s", settings.redacted_database_url)
     yield
     logger.info("Shutting down %s", settings.APP_NAME)
 
@@ -100,9 +100,44 @@ def debug_groq_config() -> dict:
         "groq_fallback_resolved": _resolve_model(settings.GROQ_FALLBACK_MODEL),
         "groq_api_key_present": bool(settings.GROQ_API_KEY),
         "groq_api_key_length": len(settings.GROQ_API_KEY),
-        "database_url": settings.DATABASE_URL,
+        "database_url_redacted": settings.redacted_database_url,
         "app_env": settings.APP_ENV,
     }
+
+
+@app.get("/debug/db-health", tags=["system"])
+def debug_db_health() -> dict:
+    """Diagnostic-only endpoint: proves the app can actually reach the database.
+
+    Open http://localhost:8000/debug/db-health directly in a browser after
+    switching DATABASE_URL to MySQL/Postgres. Runs a real `SELECT 1` against
+    the configured engine and reports the dialect, redacted connection
+    target, and pool stats. Never returns the DB password.
+    """
+    from sqlalchemy import text
+
+    from app.db.session import engine
+
+    result = {
+        "database_url_redacted": settings.redacted_database_url,
+        "dialect": engine.dialect.name,
+        "driver": engine.dialect.driver,
+    }
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+        result["connection_status"] = "ok"
+    except Exception as exc:  # noqa: BLE001 - diagnostic endpoint, surface the raw error
+        result["connection_status"] = "failed"
+        result["error"] = str(exc)
+
+    pool = engine.pool
+    result["pool"] = {
+        "size": getattr(pool, "size", lambda: None)(),
+        "checked_out": getattr(pool, "checkedout", lambda: None)(),
+    }
+    return result
 
 
 api_prefix = settings.API_V1_PREFIX

@@ -11,6 +11,6 @@ router = APIRouter(tags=["history"])
 @router.get("/history/{doctor}", response_model=InteractionListResponse)
 def get_history_for_doctor(doctor: str, db: DbSession, limit: int = 50) -> InteractionListResponse:
     service = InteractionService(db)
-    interactions = service.list_history(doctor_name=doctor, limit=limit)
-    items = [InteractionRead(**serialize_interaction(i)) for i in interactions]
-    return InteractionListResponse(total=len(items), items=items)
+    result = service.search_history(hcp_names=[doctor], limit=limit, include_summary=False)
+    items = [InteractionRead(**serialize_interaction(i)) for i in result["items"]]
+    return InteractionListResponse(total=result["total"], items=items)

@@ -23,6 +23,11 @@ class AgentState(TypedDict):
     # response node and returned to the FastAPI route.
     tool_used: Optional[str]
     interaction: Optional[dict[str, Any]]
+    # All interactions created/edited THIS turn, in order (usually just one,
+    # but a single message can name multiple HCPs, producing several - see
+    # tools_node in graph.py, which accumulates into this list so the last
+    # one never silently overwrites the others).
+    interactions: Optional[list[dict[str, Any]]]
     history: Optional[list[dict[str, Any]]]
     recommendations: Optional[list[str]]
     follow_up: Optional[dict[str, Any]]

@@ -14,6 +14,7 @@ export default function ChatPanel() {
   const messages = useSelector((s) => s.chat.messages);
   const isSending = useSelector((s) => s.chat.isSending);
   const sessionId = useSelector((s) => s.ui.sessionId);
+  const browseActive = useSelector((s) => s.browse.active);
   const scrollRef = useRef(null);
 
   useEffect(() => {
@@ -29,6 +30,11 @@ export default function ChatPanel() {
     try {
       const data = await sendChatMessage(sessionId, text);
 
+      // The "Live" interaction state always updates in the background,
+      // regardless of whether the rep is currently looking at Browse mode -
+      // Browse is just a passive viewer, it never blocks Live from staying
+      // current. We only decide separately (below) whether to *visibly*
+      // interrupt Browse mode or just notify quietly.
       if (data.interaction) {
         dispatch(applyAiInteractionUpdate(data.interaction));
         setTimeout(() => dispatch(clearHighlights()), 1900);
@@ -51,14 +57,48 @@ export default function ChatPanel() {
       );
 
       if (data.tool_used) {
-        dispatch(pushToast({ message: `AI updated the CRM via ${data.tool_used.replace(/_/g, " ")}`, type: "success" }));
+        const loggedCount = data.interactions ? data.interactions.length : data.interaction ? 1 : 0;
+        if (browseActive && data.interaction) {
+          // Per design: while browsing, a new/edited interaction does NOT
+          // yank the panel back to Live automatically - just surface a
+          // clickable notification so the rep can jump there when ready.
+          const label =
+            loggedCount > 1
+              ? `${loggedCount} interactions logged — click here to view`
+              : "New interaction logged — click here to view";
+          dispatch(pushToast({ message: label, type: "success", onClickAction: "exit_browse" }));
+        } else if (loggedCount > 1) {
+          dispatch(pushToast({ message: `${loggedCount} interactions logged via ${data.tool_used.replace(/_/g, " ")}`, type: "success" }));
+        } else {
+          dispatch(pushToast({ message: `AI updated the CRM via ${data.tool_used.replace(/_/g, " ")}`, type: "success" }));
+        }
       }
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error("Chat request failed:", err);
-      const detail =
-        err?.response?.data?.detail ||
-        "I couldn't reach the CRM backend. Please check that the API server is running and try again.";
+
+      let detail;
+      if (err?.response?.data?.detail) {
+        // The backend actually responded with a real error (4xx/5xx) - show
+        // that specific message rather than a generic one.
+        detail = err.response.data.detail;
+      } else if (err?.code === "ECONNABORTED" || /timeout/i.test(err?.message || "")) {
+        // Axios's own timeout (configured in api/client.js) - the request
+        // never got a response in time. This is NOT the same as the server
+        // being unreachable, and is usually caused by a long-running
+        // request (e.g. a very broad query or a slow model response), not
+        // a down backend - worth telling the rep that distinctly.
+        detail =
+          "That request took too long and timed out. It may still be processing - try a more " +
+          "specific question, or wait a moment and try again.";
+      } else if (err?.request) {
+        // A request was sent but no response of any kind came back - this
+        // is the genuine "server isn't reachable" case.
+        detail = "I couldn't reach the CRM backend. Please check that the API server is running and try again.";
+      } else {
+        detail = "Something went wrong processing that request.";
+      }
+
       dispatch(addErrorMessage(typeof detail === "string" ? detail : "Something went wrong processing that request."));
       dispatch(pushToast({ message: "Request failed", type: "error" }));
     } finally {

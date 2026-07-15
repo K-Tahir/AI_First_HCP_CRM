@@ -11,6 +11,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.models.interaction import Interaction, InteractionType, Sentiment
 from app.repositories.doctor_repository import DoctorRepository
 from app.repositories.interaction_repository import InteractionRepository
@@ -158,14 +159,162 @@ class InteractionService:
     def get_by_id(self, interaction_id: int) -> Interaction | None:
         return self.interactions.get_by_id(interaction_id)
 
-    def list_history(
+    # ------------------------------------------------------------------
+    # HCP / interaction resolution - the single, shared way any tool that
+    # needs to act on "the interaction for <name>" figures out which row
+    # that is. This replaces each tool doing its own ad hoc name matching
+    # and its own silent "just use whatever was touched last" fallback,
+    # which is what let a schedule_followup for one HCP land on a
+    # completely different HCP's record with no error surfaced anywhere.
+    #
+    # Every path returns one of three shapes, and callers must not guess
+    # past a non-"resolved" result:
+    #   {"status": "resolved",  "doctor"/"interaction": <row>}
+    #   {"status": "not_found", "message": <str>}
+    #   {"status": "ambiguous", "message": <str>, "candidates": [...]}
+    # ------------------------------------------------------------------
+    def resolve_doctor(self, hcp_name: str) -> dict[str, Any]:
+        """Resolve a free-text HCP name to a single Doctor, or a clarification."""
+        candidates = self.doctors.find_candidates(hcp_name)
+        tier = candidates["exact"] or candidates["prefix"] or candidates["substring"]
+        if not tier:
+            return {
+                "status": "not_found",
+                "message": (
+                    f"I couldn't find any HCP matching '{hcp_name}'. Did you mean an "
+                    f"existing doctor, or should I log a new interaction for them first?"
+                ),
+            }
+        distinct = {doc.id: doc for doc in tier}
+        if len(distinct) > 1:
+            names = ", ".join(sorted(doc.name for doc in distinct.values()))
+            return {
+                "status": "ambiguous",
+                "message": f"I found multiple HCPs matching '{hcp_name}': {names}. Which one did you mean?",
+                "candidates": [
+                    {"id": doc.id, "name": doc.name, "hospital": doc.hospital}
+                    for doc in distinct.values()
+                ],
+            }
+        return {"status": "resolved", "doctor": next(iter(distinct.values()))}
+
+    def resolve_target_interaction(
         self,
-        doctor_name: str | None = None,
+        session_id: str,
+        interaction_id: int | None = None,
+        hcp_name: str | None = None,
+    ) -> dict[str, Any]:
+        """Resolve which interaction a mutating tool call (edit / schedule
+        follow-up) should act on. An explicit interaction_id always wins; an
+        hcp_name is looked up and, on anything other than exactly one
+        confident match, returns not_found/ambiguous instead of guessing.
+        Only when NEITHER is given does this fall back to "latest interaction
+        in this session" - that fallback is for plain corrections with no
+        name at all ("actually make that negative"), never for cross-HCP
+        guessing."""
+        if interaction_id is not None:
+            interaction = self.interactions.get_by_id(interaction_id)
+            if interaction is None:
+                return {"status": "not_found", "message": f"No interaction found with id {interaction_id}."}
+            return {"status": "resolved", "interaction": interaction}
+
+        if hcp_name:
+            doctor_resolution = self.resolve_doctor(hcp_name)
+            if doctor_resolution["status"] != "resolved":
+                return doctor_resolution
+            doctor = doctor_resolution["doctor"]
+            latest = self.interactions.get_latest_for_doctor(doctor.id)
+            if latest is None:
+                return {
+                    "status": "not_found",
+                    "message": (
+                        f"I found {doctor.name} as an HCP, but there's no logged interaction "
+                        f"for them yet. Please log an interaction first."
+                    ),
+                }
+            return {"status": "resolved", "interaction": latest}
+
+        latest = self.get_latest_for_session(session_id)
+        if latest is None:
+            return {
+                "status": "not_found",
+                "message": (
+                    "There's no interaction logged yet in this conversation. Please log one "
+                    "first, or tell me which HCP you mean."
+                ),
+            }
+        return {"status": "resolved", "interaction": latest}
+
+    # ------------------------------------------------------------------
+    # Deletion - REST-only (see routes/interactions.py). Deliberately not
+    # exposed as a chat tool, so deletion can never be triggered by a
+    # misread natural-language message; it always goes through an explicit
+    # UI action with its own confirmation step.
+    # ------------------------------------------------------------------
+    def delete_interaction(self, interaction_id: int) -> None:
+        interaction = self.interactions.get_by_id(interaction_id)
+        if interaction is None:
+            raise ValueError(f"Interaction {interaction_id} not found")
+        self.interactions.delete(interaction)
+        self._db.commit()
+
+    def delete_interactions(self, interaction_ids: list[int]) -> dict[str, list[int]]:
+        found = self.interactions.get_many_by_ids(interaction_ids)
+        found_ids = {row.id for row in found}
+        missing_ids = [i for i in interaction_ids if i not in found_ids]
+        for row in found:
+            self.interactions.delete(row)
+        self._db.commit()
+        return {"deleted_ids": sorted(found_ids), "missing_ids": missing_ids}
+
+    def search_history(
+        self,
+        hcp_names: list[str] | None = None,
+        hospital: str | None = None,
+        product: str | None = None,
+        sentiment: str | None = None,
+        interaction_type: str | None = None,
         date_from: date | None = None,
         date_to: date | None = None,
-        limit: int = 50,
-    ) -> list[Interaction]:
-        return self.interactions.list_history(doctor_name, date_from, date_to, limit)
+        offset: int = 0,
+        limit: int = 20,
+        include_summary: bool = False,
+    ) -> dict[str, Any]:
+        """Single, shared search path used by both the view_interaction_history
+        LangGraph tool (include_summary=True, small limit) and the record
+        Browse REST endpoint (include_summary=False, arbitrary offset/limit).
+
+        Free-text `sentiment`/`interaction_type` filter values (however the
+        LLM or a query string phrased them) are normalized through the exact
+        same alias tables used when writing data, so a filter of "positive"
+        matches a stored "Positive" reliably. Returns capped items, the TRUE
+        total matching count (not just len(items) - the earlier bug), and,
+        if requested, aggregate stats computed without ever loading every
+        matching row's full data into the LLM's context.
+        """
+        max_limit = settings.HISTORY_QUERY_MAX_LIMIT if include_summary else settings.INTERACTIONS_LIST_MAX_LIMIT
+        default_limit = settings.HISTORY_QUERY_DEFAULT_LIMIT if include_summary else 20
+        clamped_limit = max(1, min(limit or default_limit, max_limit))
+        clamped_offset = max(0, offset or 0)
+
+        normalized_sentiment = _normalize_sentiment(sentiment) if sentiment else None
+        normalized_type = _normalize_interaction_type(interaction_type) if interaction_type else None
+
+        filter_kwargs = dict(
+            hcp_names=hcp_names,
+            hospital=hospital,
+            product=product,
+            sentiment=normalized_sentiment,
+            interaction_type=normalized_type,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        items = self.interactions.list_history(offset=clamped_offset, limit=clamped_limit, **filter_kwargs)
+        total = self.interactions.count_history(**filter_kwargs)
+        summary = self.interactions.summarize_history(**filter_kwargs) if include_summary else None
+
+        return {"items": items, "total": total, "summary": summary}
 
 
 def _join_products(products: list[str] | None) -> str | None:
@@ -202,4 +351,5 @@ def serialize_interaction(interaction: Interaction | None) -> dict[str, Any] | N
         "notes": interaction.notes,
         "discussion_summary": interaction.discussion_summary,
         "follow_up_date": interaction.follow_up_date,
+        "follow_ups_count": len(interaction.follow_ups) if interaction.follow_ups is not None else 0,
     }

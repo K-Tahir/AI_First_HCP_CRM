@@ -2,8 +2,14 @@
 
 Applies a partial correction to an already-logged interaction. Only the
 fields explicitly supplied are changed; everything else is preserved.
-Defaults to the most recently logged interaction in the current session
-unless an explicit interaction_id is given.
+
+Target resolution (which interaction gets edited) goes through
+InteractionService.resolve_target_interaction: an explicit interaction_id
+wins, then target_hcp_name is looked up, and only when neither is given does
+it fall back to the most recently logged interaction in the session. A
+target_hcp_name that doesn't match exactly one HCP returns a not_found /
+ambiguous result instead of guessing - see resolve_target_interaction's
+docstring for why that matters.
 """
 from datetime import date
 from typing import Optional
@@ -19,11 +25,28 @@ class EditInteractionArgs(BaseModel):
     interaction_id: Optional[int] = Field(
         None,
         description=(
-            "ID of the interaction to edit, if known. If omitted, the most recently logged "
-            "interaction in this conversation is edited."
+            "ID of the interaction to edit, if known. If omitted, target_hcp_name (if given) is "
+            "used to locate it; otherwise the most recently logged interaction in this "
+            "conversation is edited."
         ),
     )
-    hcp_name: Optional[str] = Field(None, description="Corrected HCP name")
+    target_hcp_name: Optional[str] = Field(
+        None,
+        description=(
+            "The HCP the rep is referring to, used ONLY to find WHICH interaction to edit when "
+            "interaction_id isn't known - e.g. the rep says 'fix Dr. Sharma's notes' or 'no, I "
+            "meant the Sharma interaction'. Do NOT use this to correct a misspelled name on the "
+            "record - that's what the separate hcp_name field is for."
+        ),
+    )
+    hcp_name: Optional[str] = Field(
+        None,
+        description=(
+            "The CORRECTED HCP name to write onto the target interaction - use this only when "
+            "the rep is fixing a wrong/misspelled name already on that record, e.g. 'actually "
+            "his name is spelled Mohammed, not Mohamed'."
+        ),
+    )
     hospital: Optional[str] = None
     specialty: Optional[str] = None
     interaction_date: Optional[date] = None
@@ -45,19 +68,16 @@ class EditInteractionArgs(BaseModel):
 def make_edit_interaction_tool(db: Session, session_id: str) -> StructuredTool:
     service = InteractionService(db)
 
-    def _run(interaction_id: Optional[int] = None, **kwargs) -> dict:
-        target_id = interaction_id
-        if target_id is None:
-            latest = service.get_latest_for_session(session_id)
-            if latest is None:
-                return {
-                    "status": "error",
-                    "message": (
-                        "There's no interaction logged yet in this conversation to edit. "
-                        "Please log an interaction first."
-                    ),
-                }
-            target_id = latest.id
+    def _run(interaction_id: Optional[int] = None, target_hcp_name: Optional[str] = None, **kwargs) -> dict:
+        resolution = service.resolve_target_interaction(session_id, interaction_id, target_hcp_name)
+        if resolution["status"] != "resolved":
+            # not_found / ambiguous - surfaced as-is so the assistant asks the rep to
+            # clarify instead of guessing and silently editing the wrong record.
+            result = {"status": resolution["status"], "message": resolution["message"]}
+            if "candidates" in resolution:
+                result["candidates"] = resolution["candidates"]
+            return result
+        target_id = resolution["interaction"].id
 
         updates = {k: v for k, v in kwargs.items() if v is not None}
         if not updates:

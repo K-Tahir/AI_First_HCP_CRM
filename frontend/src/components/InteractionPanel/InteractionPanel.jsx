@@ -1,6 +1,7 @@
 import React from "react";
 import { useSelector } from "react-redux";
 import FormField from "./FormField";
+import BrowseBar from "../BrowsePanel/BrowseBar";
 import "./InteractionPanel.css";
 
 function formatDate(isoDate) {
@@ -39,11 +40,25 @@ function BooleanPill({ value, trueLabel, falseLabel, highlighted }) {
 }
 
 export default function InteractionPanel() {
-  const interaction = useSelector((s) => s.interaction.current);
+  const liveInteraction = useSelector((s) => s.interaction.current);
   const highlighted = useSelector((s) => s.interaction.recentlyUpdatedFields);
+  const browseActive = useSelector((s) => s.browse.active);
+  const browseViewMode = useSelector((s) => s.browse.viewMode);
+  const browseRecord = useSelector((s) => s.browse.currentRecord);
+  const browseLoading = useSelector((s) => s.browse.loading);
 
-  const is = (field) => highlighted.includes(field);
-  const hasAnyData = interaction.hcp_name || interaction.id;
+  // Browse mode shows a passively-viewed historical record instead of the
+  // AI's current live focus - it's still 100% read-only either way (no
+  // onChange handlers exist anywhere in this component in either mode).
+  // Field highlighting only ever applies to Live mode, since a browsed
+  // record wasn't just changed by the AI this turn.
+  const interaction = browseActive ? browseRecord : liveInteraction;
+  const is = browseActive ? () => false : (field) => highlighted.includes(field);
+  const hasAnyData = interaction && (interaction.hcp_name || interaction.id);
+  // "List / Delete" mode renders its own table (inside BrowseBar) in place
+  // of the single-record view below - so none of the single-record
+  // states (loading/empty/grid) should render underneath it.
+  const showSingleRecordView = !(browseActive && browseViewMode === "list");
 
   return (
     <section className="interaction-panel">
@@ -54,7 +69,22 @@ export default function InteractionPanel() {
         </span>
       </div>
 
-      {!hasAnyData && (
+      <BrowseBar />
+
+      {showSingleRecordView && browseActive && browseLoading && (
+        <div className="interaction-panel__empty">
+          <p>Loading record…</p>
+        </div>
+      )}
+
+      {showSingleRecordView && browseActive && !browseLoading && !hasAnyData && (
+        <div className="interaction-panel__empty">
+          <div className="interaction-panel__empty-icon">🔍</div>
+          <p>No interactions match those filters. Try adjusting or resetting them above.</p>
+        </div>
+      )}
+
+      {showSingleRecordView && !browseActive && !hasAnyData && (
         <div className="interaction-panel__empty">
           <div className="interaction-panel__empty-icon">💬</div>
           <p>
@@ -63,6 +93,8 @@ export default function InteractionPanel() {
           </p>
         </div>
       )}
+
+      {showSingleRecordView && hasAnyData && (
 
       <div className="interaction-panel__grid">
         <FormField label="HCP Name" value={interaction.hcp_name} placeholder="Not yet captured" highlighted={is("hcp_name")} />
@@ -132,6 +164,7 @@ export default function InteractionPanel() {
           highlighted={is("notes")}
         />
       </div>
+      )}
     </section>
   );
 }

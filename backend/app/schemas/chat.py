@@ -18,6 +18,13 @@ class ChatResponse(BaseModel):
     interaction: Optional[InteractionRead] = Field(
         None, description="Current structured interaction state to sync into the left form"
     )
+    interactions: Optional[list[InteractionRead]] = Field(
+        None,
+        description=(
+            "All interactions created/edited THIS turn, in order. Usually just one; a message "
+            "naming multiple HCPs produces several, all preserved here (not just the last)."
+        ),
+    )
     history: Optional[list[dict[str, Any]]] = Field(
         None, description="Populated when the history tool was invoked"
     )

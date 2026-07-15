@@ -10,103 +10,6 @@ understood and saved.
 
 ---
 
-# AIVOA CRM — Setup & Run Guide
-Two servers run side by side: 
-The backend (FastAPI, port 8000) and the frontend (React/Vite, port 5173). 
-# Start the backend first.
-# Prerequisites
-ToolVersionCheck withPython3.11 or 3.12python --versionNode.js18+node --versionnpmcomes with Nodenpm --versionGroq API keyfreeconsole.groq.com/keys
-No database install needed to start — it defaults to a zero-setup SQLite file.
-
-# Step 1 — Clone the repo
-- bashgit clone <your-github-repo-url>
-- cd <repo-folder-name>
-You should see two top-level folders: backend/ and frontend/.
-
-# Step 2 — Backend setup
-- bashcd backend
-- Create and activate a virtual environment:
-- bash# Windows (PowerShell)
-- python -m venv .venv
-- .venv\Scripts\Activate.ps1
-
-# macOS / Linux
-- python3 -m venv .venv
-- source .venv/bin/activate
-- You'll know it worked because your terminal prompt now starts with (.venv).
-- Install dependencies:
-- bashpip install -r requirements.txt
-- Set up your environment file:
-- bash# Windows
-- copy .env.example .env
-
-# macOS / Linux
-- cp .env.example .env
-- Open backend/.env in an editor and paste your real key into this one line:
-- GROQ_API_KEY=your_actual_key_here
-- Everything else in .env already has working defaults (SQLite database, current Groq models) — leave the rest as-is for now.
-- Start the backend:
-- bashuvicorn app.main:app --reload --port 8000
-- Confirm it's working — watch the terminal for a startup banner like:
-======================================================================
-  AIVOA backend starting | BUILD_MARKER=...
-  Groq model  : raw='openai/gpt-oss-20b' -> resolved='openai/gpt-oss-20b'
-  GROQ_API_KEY set: True (len=56)
-  Database    : sqlite:///./aivoa_crm.db
-======================================================================
-INFO:     Application startup complete.
-Then open http://localhost:8000/docs in a browser — you should see the interactive Swagger API docs. If that loads, the backend is healthy. Keep this terminal running.
-
-# Step 3 — Frontend setup
-- Open a new terminal window (leave the backend running in the first one).
-- bashcd frontend
-- Install dependencies:
-- bashnpm install
-- Set up the environment file:
-- bash# Windows
-- copy .env.example .env
-
-# macOS / Linux
-- cp .env.example .env
-- Check that frontend/.env points at your backend (it should already, by default):
-- VITE_API_BASE_URL=http://localhost:8000/api/v1
-- Start the frontend:
-- bashnpm run dev
-- It will print a local URL, typically:
-- Local:   http://localhost:5173/
-- Open that in your browser.
-
-# Step 4 — Test it end-to-end
-In the chat panel (right side), type:
-Today I met Dr. Smith at City Hospital and discussed Product X. The sentiment was positive and I shared brochures.
-Expected result: the AI replies with a short confirmation, and the left "Interaction Details" panel automatically fills in — HCP name, hospital, product, sentiment, brochures shared — with no manual clicking into any field.
-Try a correction next:
-- Actually the doctor's name was Dr. John and the sentiment was negative.
-- Only those two fields on the left panel should change; everything else stays the same.
-Then try:
-Show me history for Dr. John
-This should render as a proper table (not raw text) below the chat.
-
-# Troubleshooting
-- Symptom: Frontend loads but chat gives a network error
-- Likely cause / fix: Backend isn't running, or 'VITE_API_BASE_URL' port doesn't match the backend's --port
-- Symptom: GROQ_API_KEY is not set error
-- Likely cause / fix: You forgot to paste the key into backend/.env, or didn't restart uvicorn after adding it
-- Symptom: pip install fails on a package
-- Likely cause / fix: Confirm the virtual environment is activated ((.venv) should be visible in the prompt) before installing
-- Symptom: Port 8000 or 5173 already in use
-- Likely cause / fix: Something else is already running there — kill it, or start uvicorn with a different --port and update VITE_API_BASE_URL to match
-- Symptom: CORS error in browser console
-- Likely cause / fix: Check CORS_ORIGINS in backend/.env includes the exact frontend URL/port you're using
-- Symptom: Left form doesn't update after a chat message
-- Likely cause / fix: Open the browser console for JS errors first; also confirm the backend terminal shows POST /api/v1/chat returning 200 OK
-- Symptom: http://localhost:8000/debug/groq-config
-- Likely cause / fix: Open this directly in a browser any time to see exactly what config the running backend sees — model, whether the API key is present, database URL. Useful if something seems off.
-
-# Stopping the app
-- In each terminal, press Ctrl+C. Deactivate the Python virtual environment with deactivate if needed.
-_________________________________________________________________________________________________________
-_________________________________________________________________________________________________________
 ## 1. Assignment Objective
 
 Build the Log Interaction Screen for an AI-first CRM HCP module:
@@ -165,6 +68,7 @@ the model itself.
 | LLM            | Groq API — `openai/gpt-oss-20b` (default), swappable to `openai/gpt-oss-120b`. The assignment-specified `gemma2-9b-it` / `llama-3.3-70b-versatile` have since been deprecated by Groq; `app/agent/llm.py` auto-maps them to current equivalents if ever configured. |
 | Database       | MySQL (via `DATABASE_URL`); SQLite by default for zero-setup local runs |
 | ORM            | SQLAlchemy 2.0 (typed, declarative)                      |
+| Migrations     | Alembic (versioned schema changes; see `backend/alembic/README.md`) |
 | Validation     | Pydantic v2 / pydantic-settings                          |
 
 ## 4. Folder Structure
@@ -306,24 +210,75 @@ the user repeating the interaction ID.
 - Python 3.11+
 - Node.js 18+
 - A Groq API key — create one free at https://console.groq.com/keys
-- MySQL 8+ (optional — SQLite is used automatically if you skip this)
+- MySQL 8+ (this project's default/demonstrated database — see setup below)
 
-### Backend
+### 1. Create the MySQL database
+
+```sql
+CREATE DATABASE aivoa_crm CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+CREATE USER 'aivoa'@'localhost' IDENTIFIED BY 'your_password';
+GRANT ALL PRIVILEGES ON aivoa_crm.* TO 'aivoa'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+(Using the root user directly instead is fine too for local development — just point
+`DATABASE_URL` at whichever credentials you used.)
+
+### 2. Backend setup
 
 ```bash
 cd backend
 python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 cp .env.example .env
-# edit .env and set GROQ_API_KEY=<your key>
-# (optional) set DATABASE_URL to your MySQL DSN, e.g.:
-# DATABASE_URL=mysql+pymysql://root:password@localhost:3306/aivoa_crm
+```
 
+Edit `backend/.env`:
+```
+GROQ_API_KEY=<your key>
+DATABASE_URL=mysql+pymysql://aivoa:your_password@localhost:3306/aivoa_crm?charset=utf8mb4
+```
+(`PyMySQL` and `cryptography` — needed for MySQL 8's default auth plugin — are already in
+`requirements.txt`, so no extra driver install is needed.)
+
+### 3. Create the schema with Alembic
+
+MySQL's schema is owned entirely by Alembic in this project (see `app/db/session.py` —
+`create_all()` deliberately only runs for the SQLite fallback, so there's a single source of
+truth for schema on a real database):
+
+```bash
+# still inside backend/, venv active
+alembic revision --autogenerate -m "initial schema"
+alembic upgrade head
+```
+
+Open the generated file under `alembic/versions/` and skim it before running `upgrade` — it's
+the first migration, so it's worth a quick sanity check. See `backend/alembic/README.md` for the
+full workflow (what to run whenever a model changes afterward).
+
+### 4. Start the backend and verify the connection
+
+```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-The API is now live at `http://localhost:8000` (docs at `/docs`). Tables are created
-automatically on startup.
+Open `http://localhost:8000/debug/db-health` — it runs a real `SELECT 1` against MySQL and
+reports the connection status, dialect, and pool stats (password always redacted). Confirm you
+see `"connection_status": "ok"` and `"dialect": "mysql"` before moving on. If it's not `"ok"`,
+the error message there tells you exactly what's wrong (wrong password, database doesn't exist,
+etc.) without needing to dig through logs.
+
+### No MySQL available? (fallback for quick frontend-only demos)
+
+Set `DATABASE_URL=sqlite:///./aivoa_crm.db` in `.env` instead, skip the Alembic step entirely
+(tables are auto-created on startup), and start uvicorn directly. This project is built and
+tested against MySQL per the assignment, but SQLite remains available so the UI/agent can still
+be exercised with zero external setup.
+
+Connection pooling (`pool_recycle=1800`, `pool_pre_ping=True`) is already tuned in
+`app/db/session.py` specifically to avoid the classic "MySQL server has gone away" error
+that shows up when a pooled connection sits idle past MySQL's timeout.
 
 ### Frontend
 
@@ -340,10 +295,32 @@ Open `http://localhost:5173`.
 
 1. Go to https://console.groq.com/keys and create a new API key.
 2. Paste it into `backend/.env` as `GROQ_API_KEY`.
-3. Default model is `openai/gpt-oss-20b` (Groq's current recommended replacement for the
-   assignment-specified `gemma2-9b-it`, which Groq has since deprecated). To switch to the
-   fallback `openai/gpt-oss-120b`, either change `GROQ_MODEL` in `.env` or pass `model=` to
-   `get_llm()` — no other code changes are required.
+3. Default model is `openai/gpt-oss-20b`. See the note below for why this differs from the
+   assignment's originally-specified model names.
+
+### Note on Model Selection (read before assuming this is a deviation)
+
+The assignment specifies `gemma2-9b-it` as the primary model and `llama-3.3-70b-versatile` as
+context/fallback. Both are, as of this submission, retired from Groq's platform:
+
+- **Aug 8, 2025** — Groq deprecated `gemma2-9b-it`, recommending `llama-3.1-8b-instant` as the
+  direct replacement.
+- **Jun 17, 2026** — Groq deprecated `llama-3.1-8b-instant` *and* `llama-3.3-70b-versatile`
+  together, recommending `openai/gpt-oss-20b` and `openai/gpt-oss-120b` respectively.
+  (See https://console.groq.com/docs/deprecations for Groq's current list.)
+
+So the exact model names in the assignment are unavailable through no fault of the
+implementation — both retirements happened after the assignment was written, and the second
+happened after `gemma2-9b-it`'s own replacement was also retired. `openai/gpt-oss-20b` /
+`openai/gpt-oss-120b` are Groq's own current official recommendations, not an arbitrary
+substitution.
+
+This is exactly why `GROQ_MODEL` / `GROQ_FALLBACK_MODEL` are environment variables rather than
+hardcoded strings, and why `app/agent/llm.py` additionally auto-translates any older/deprecated
+model ID at call time as a safety net (`_resolve_model()`): the architecture was built so that a
+platform-side model retirement — which is entirely outside this project's control and will happen
+again — never requires a code change, only a config value (or, worst case, one line in a mapping
+dict).
 
 ## 10. Example Interactions to Try
 

@@ -1,8 +1,16 @@
 """LangGraph Tool 4 - Schedule Follow-up.
 
 Creates a follow-up record (date + notes) associated with an interaction.
-Defaults to the most recently logged interaction in the current session
-unless an explicit interaction_id is given.
+
+Target resolution goes through InteractionService.resolve_target_interaction:
+an explicit interaction_id wins, then hcp_name is looked up via tiered name
+matching, and only when neither is given does it fall back to the most
+recently logged interaction in the session. Previously, a hcp_name with zero
+matches silently fell back to "latest interaction in session" regardless of
+whose HCP that was - which is how a follow-up meant for one doctor could end
+up attached to a completely different one with no error surfaced anywhere.
+That silent fallback no longer happens: zero or multiple matches now return
+a not_found/ambiguous result for the assistant to ask about instead.
 """
 from datetime import date
 from typing import Optional
@@ -12,15 +20,16 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.repositories.followup_repository import FollowUpRepository
-from app.services.interaction_service import InteractionService
+from app.services.interaction_service import InteractionService, serialize_interaction
 
 
 class ScheduleFollowUpArgs(BaseModel):
     interaction_id: Optional[int] = Field(
         None,
         description=(
-            "ID of the interaction this follow-up relates to. If omitted, uses the most "
-            "recently logged interaction in this conversation."
+            "ID of the interaction this follow-up relates to. If omitted, hcp_name (if given) "
+            "is used to locate it; otherwise the most recently logged interaction in this "
+            "conversation is used."
         ),
     )
     hcp_name: Optional[str] = Field(
@@ -40,24 +49,17 @@ def make_schedule_followup_tool(db: Session, session_id: str) -> StructuredTool:
         hcp_name: Optional[str] = None,
         notes: Optional[str] = None,
     ) -> dict:
-        target_id = interaction_id
-
-        if target_id is None and hcp_name:
-            matches = interaction_service.list_history(doctor_name=hcp_name, limit=1)
-            if matches:
-                target_id = matches[0].id
-
-        if target_id is None:
-            latest = interaction_service.get_latest_for_session(session_id)
-            if latest is None:
-                return {
-                    "status": "error",
-                    "message": (
-                        "There's no interaction to attach this follow-up to yet. Please log an "
-                        "interaction first, or specify which HCP the follow-up is for."
-                    ),
-                }
-            target_id = latest.id
+        resolution = interaction_service.resolve_target_interaction(session_id, interaction_id, hcp_name)
+        if resolution["status"] != "resolved":
+            # not_found / ambiguous - never fall back to "whatever interaction was
+            # touched last"; that cross-HCP guess is exactly what caused follow-ups
+            # to land on the wrong doctor.
+            result = {"status": resolution["status"], "message": resolution["message"]}
+            if "candidates" in resolution:
+                result["candidates"] = resolution["candidates"]
+            return result
+        target = resolution["interaction"]
+        target_id = target.id
 
         follow_up = followups.create(
             interaction_id=target_id, follow_up_date=follow_up_date, notes=notes, status="Pending"
@@ -68,11 +70,13 @@ def make_schedule_followup_tool(db: Session, session_id: str) -> StructuredTool:
         )
         db.commit()
 
-        from app.services.interaction_service import serialize_interaction
-
+        target_hcp_display = interaction.doctor.name if interaction.doctor else "this interaction"
         return {
             "status": "success",
-            "message": f"Scheduled a follow-up for {follow_up_date.strftime('%d/%m/%Y')}.",
+            "message": (
+                f"Scheduled a follow-up for {target_hcp_display} on "
+                f"{follow_up_date.strftime('%d/%m/%Y')}."
+            ),
             "follow_up": {
                 "id": follow_up.id,
                 "interaction_id": follow_up.interaction_id,

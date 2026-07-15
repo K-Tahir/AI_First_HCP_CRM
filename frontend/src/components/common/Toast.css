@@ -25,3 +25,13 @@
 .toast--error {
   background: var(--color-negative);
 }
+
+.toast--clickable {
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.toast--clickable:hover {
+  opacity: 0.9;
+}

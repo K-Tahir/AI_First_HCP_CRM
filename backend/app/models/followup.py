@@ -13,7 +13,9 @@ class FollowUp(Base):
     __tablename__ = "follow_ups"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    interaction_id: Mapped[int] = mapped_column(ForeignKey("interactions.id"), nullable=False)
+    interaction_id: Mapped[int] = mapped_column(
+        ForeignKey("interactions.id", ondelete="CASCADE"), nullable=False
+    )
     interaction: Mapped["Interaction"] = relationship("Interaction", back_populates="follow_ups")
 
     follow_up_date: Mapped[date_] = mapped_column(Date, nullable=False)

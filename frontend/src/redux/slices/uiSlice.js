@@ -32,8 +32,10 @@ const uiSlice = createSlice({
       reducer(state, action) {
         state.toasts.push(action.payload);
       },
-      prepare({ message, type }) {
-        return { payload: { id: nanoid(), message, type: type || "success" } };
+      prepare({ message, type, onClickAction }) {
+        return {
+          payload: { id: nanoid(), message, type: type || "success", onClickAction: onClickAction || null },
+        };
       },
     },
     dismissToast(state, action) {

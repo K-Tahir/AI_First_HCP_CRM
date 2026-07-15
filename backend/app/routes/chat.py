@@ -38,6 +38,7 @@ def chat(payload: ChatRequest, db: DbSession) -> ChatResponse:
         reply=result["reply"],
         tool_used=result.get("tool_used"),
         interaction=result.get("interaction"),
+        interactions=result.get("interactions"),
         history=result.get("history"),
         recommendations=result.get("recommendations"),
         follow_up=result.get("follow_up"),

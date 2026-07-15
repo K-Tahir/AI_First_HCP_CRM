@@ -43,7 +43,18 @@ def make_recommend_action_tool(db: Session, session_id: str) -> StructuredTool:
 
     def _run(hcp_name: Optional[str] = None) -> dict:
         if hcp_name:
-            history = service.list_history(doctor_name=hcp_name, limit=10)
+            doctor_resolution = service.resolve_doctor(hcp_name)
+            if doctor_resolution["status"] != "resolved":
+                # not_found / ambiguous - previously a loose substring match could
+                # silently blend history from two similarly-named HCPs into one
+                # recommendation. Ask instead of guessing.
+                result = {"status": doctor_resolution["status"], "message": doctor_resolution["message"]}
+                if "candidates" in doctor_resolution:
+                    result["candidates"] = doctor_resolution["candidates"]
+                return result
+            history = service.search_history(
+                hcp_names=[doctor_resolution["doctor"].name], limit=10
+            )["items"]
         else:
             latest = service.get_latest_for_session(session_id)
             if latest is None:
@@ -52,7 +63,7 @@ def make_recommend_action_tool(db: Session, session_id: str) -> StructuredTool:
                     "message": "There's no interaction history yet to base a recommendation on.",
                 }
             name = latest.doctor.name if latest.doctor else None
-            history = service.list_history(doctor_name=name, limit=10) if name else [latest]
+            history = service.search_history(hcp_names=[name], limit=10)["items"] if name else [latest]
 
         if not history:
             return {

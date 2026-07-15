@@ -36,8 +36,20 @@ class InteractionRead(InteractionBase):
     id: int
     session_id: str
     doctor_id: Optional[int] = None
+    follow_ups_count: int = 0
 
 
 class InteractionListResponse(BaseModel):
     total: int
     items: list[InteractionRead]
+
+
+class InteractionBulkDeleteRequest(BaseModel):
+    interaction_ids: list[int] = Field(..., min_length=1, description="IDs to delete")
+
+
+class InteractionBulkDeleteResponse(BaseModel):
+    deleted_ids: list[int]
+    missing_ids: list[int] = Field(
+        default_factory=list, description="Requested IDs that didn't exist (already deleted, etc.)"
+    )
