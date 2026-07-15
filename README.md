@@ -1,45 +1,108 @@
-# AIVOA — AI-First CRM · Healthcare Professional (HCP) Module
+<div align="center">
 
-**Log Interaction Screen** — a split-screen CRM where a pharmaceutical sales representative
-speaks naturally to an AI Assistant, and a LangGraph agent extracts structured data, calls the
-right tool, writes to the database, and pushes a live update into the on-screen CRM form.
+# AIVOA — AI-First CRM
+### Healthcare Professional (HCP) Module · Log Interaction Screen
 
-The representative **never** types directly into the Interaction Details form. Every field on
-the left is a live, read-only reflection of what the AI Assistant, orchestrated by LangGraph, has
-understood and saved.
+**A CRM where the form fills itself.** The representative talks; a LangGraph agent listens,
+decides, acts, and the screen updates in front of them.
+
+![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=flat-square&logo=python&logoColor=white)
+![FastAPI](https://img.shields.io/badge/FastAPI-Backend-009688?style=flat-square&logo=fastapi&logoColor=white)
+![LangGraph](https://img.shields.io/badge/LangGraph-Agent%20Orchestration-1C3C3C?style=flat-square)
+![Groq](https://img.shields.io/badge/Groq-LLM%20Inference-F55036?style=flat-square)
+![React](https://img.shields.io/badge/React-18-61DAFB?style=flat-square&logo=react&logoColor=white)
+![Redux](https://img.shields.io/badge/Redux-Toolkit-764ABC?style=flat-square&logo=redux&logoColor=white)
+![MySQL](https://img.shields.io/badge/MySQL-8+-4479A1?style=flat-square&logo=mysql&logoColor=white)
+![SQLAlchemy](https://img.shields.io/badge/SQLAlchemy-2.0-D71F00?style=flat-square)
+![Alembic](https://img.shields.io/badge/Alembic-Migrations-333333?style=flat-square)
+
+</div>
+
+> Submitted for **Aivoa.AI**'s Round 1 Technical Assessment — *AI-First CRM HCP Module: Log
+> Interaction Screen*.
 
 ---
 
-## 1. Assignment Objective
+## Table of Contents
 
-Build the Log Interaction Screen for an AI-first CRM HCP module:
+1. [What This Is](#1-what-this-is)
+2. [Why It's Worth a Close Look](#2-why-its-worth-a-close-look)
+3. [Architecture](#3-architecture)
+4. [Tech Stack](#4-tech-stack)
+5. [Project Structure](#5-project-structure)
+6. [Database Design](#6-database-design)
+7. [The LangGraph Agent & Its 5 Tools](#7-the-langgraph-agent--its-5-tools)
+8. [API Reference](#8-api-reference)
+9. [Setup — Any Device, Start to Finish](#9-setup--any-device-start-to-finish)
+10. [Verifying Everything Works](#10-verifying-everything-works)
+11. [A 60-Second Guided Demo](#11-a-60-second-guided-demo)
+12. [Engineering Decisions Worth Noting](#12-engineering-decisions-worth-noting)
+13. [Troubleshooting](#13-troubleshooting)
+14. [Known Limitations & Roadmap](#14-known-limitations--roadmap)
 
-- A left panel showing structured interaction data (HCP name, hospital, sentiment, products, etc.)
-- A right panel with an AI chat assistant that is the *only* way to create or edit that data
-- A LangGraph agent with a minimum of five tools, backed by a Groq-hosted LLM, that performs
-  intent detection, entity extraction, and database writes
-- A FastAPI backend, a MySQL-compatible relational database via SQLAlchemy, and a
-  React + Redux frontend
+---
 
-## 2. Architecture
+## 1. What This Is
+
+A split-screen "Log HCP Interaction" workspace for pharmaceutical sales reps:
+
+- **Left panel** — a structured CRM form (HCP name, hospital, sentiment, products discussed,
+  brochures/samples, follow-up date, etc.)
+- **Right panel** — an AI Assistant chat. This is the *only* way data enters the left panel.
+
+There is no path from keyboard to database that skips the AI. The rep never clicks into a form
+field. They describe what happened in plain language, and a LangGraph agent — backed by a
+Groq-hosted LLM — interprets it, calls the correct tool, writes to MySQL, and the left panel
+updates itself in real time.
+
+## 2. Why It's Worth a Close Look
+
+A few things in this build go beyond the minimum spec, specifically because they're the parts
+that are easy to fake and hard to get right:
+
+- **The LLM never touches the database — provably, not just by convention.** Tools are bound to
+  Groq via native function-calling (`llm.bind_tools(...)` in `app/agent/graph.py`). The model's
+  only two possible outputs are plain text or a structured tool call; every SQL statement lives in
+  plain Python that the *graph* invokes, never the model. See [§12](#12-engineering-decisions-worth-noting).
+- **"Which doctor?" is resolved deliberately, not guessed.** Early in this project, an ambiguous
+  edit request ("set a follow-up with Dr. Khan") silently landed on the wrong doctor's record
+  because the agent defaulted to "whatever was logged most recently." That failure mode has been
+  designed out: `InteractionService.resolve_target_interaction()` now returns an explicit
+  `ambiguous` or `not_found` result instead of guessing, and the agent asks a clarifying question
+  instead of corrupting the wrong record.
+- **Deletion is deliberately not an AI tool.** You can delete one or many interaction records from
+  the Browse view, but that action is wired as a direct REST call, never as something a chat
+  message can trigger — a natural-language "system" should not be able to destroy data on a
+  misread sentence.
+- **MySQL portability was actually tested, not assumed.** A few SQLAlchemy conveniences
+  (`.nullslast()` for sort ordering, in particular) compile to syntax MySQL doesn't support, unlike
+  Postgres/SQLite. Every ordering query in `interaction_repository.py` uses a portable `CASE`-based
+  equivalent instead, specifically so this doesn't quietly work in development on SQLite and then
+  break in front of an evaluator running MySQL.
+- **Schema is owned by Alembic, not by app-boot side effects.** On MySQL, `create_all()` is
+  deliberately never called — a real migration history is the single source of truth for schema,
+  so what's in `alembic/versions/` is exactly what's running, with no drift possible.
+
+## 3. Architecture
 
 ```
 ┌────────────┐     ┌──────────────────┐     ┌───────────────────────────┐     ┌────────────┐
-│   React    │────▶│  FastAPI /chat   │────▶│      LangGraph Agent       │────▶│   MySQL /  │
-│  + Redux   │◀────│    endpoint      │◀────│  (StateGraph, checkpointed)│◀────│  SQLite    │
+│   React    │────▶│  FastAPI /chat   │────▶│      LangGraph Agent       │────▶│   MySQL    │
+│  + Redux   │◀────│    endpoint      │◀────│  (StateGraph, checkpointed)│◀────│ (SQLAlchemy)│
 └────────────┘     └──────────────────┘     └───────────────────────────┘     └────────────┘
-                                                   │
-                                        ┌──────────┴───────────┐
-                                        │  Groq LLM (openai/gpt-oss-20b, │
-                                        │  swappable to gpt-oss-120b)   │
-                                        └────────────────────────────┘
-                                                   │
-                     ┌──────────────┬──────────────┼──────────────┬──────────────┐
-                     ▼              ▼              ▼              ▼              ▼
+                                                    │
+                                        ┌───────────┴────────────┐
+                                        │   Groq LLM              │
+                                        │   openai/gpt-oss-20b     │
+                                        │   (⇄ gpt-oss-120b)       │
+                                        └───────────┬─────────────┘
+                                                    │ bind_tools()
+                     ┌──────────────┬───────────────┼───────────────┬──────────────┐
+                     ▼              ▼               ▼               ▼              ▼
               log_interaction edit_interaction view_history schedule_followup recommend_next_action
 ```
 
-Request flow (exactly as mandated):
+**Mandated request flow, exactly as implemented:**
 
 ```
 User → React Chat Interface → FastAPI → LangGraph Agent → Intent Detection →
@@ -47,316 +110,289 @@ Tool Selection → LLM (reasoning/extraction) → Tool Execution → Database �
 Update Redux State → Automatically Update Left Interaction Form
 ```
 
-The LLM **never** writes to the database directly. Every database mutation happens inside a
-LangGraph tool function, which calls a service/repository that owns the SQLAlchemy session.
+The LLM **decides**; the graph's `tools` node **executes**. Nothing about database access is
+hardcoded around the model — the model genuinely chooses which of the five tools to call and with
+what arguments, every turn.
 
-### Why the LLM only ever "decides", never "writes"
+## 4. Tech Stack
 
-`app/agent/graph.py` binds all five tools to the Groq model via native function-calling
-(`llm.bind_tools(tools)`). The model's only two possible outputs are: (a) plain text, or (b) a
-tool call with structured arguments. Tool execution — the part that touches SQLAlchemy — lives in
-plain Python inside `app/agent/tools/*.py` and is invoked by the graph's `tools` node, never by
-the model itself.
+| Layer            | Technology                                                                 |
+|-------------------|-----------------------------------------------------------------------------|
+| Frontend          | React 18, Redux Toolkit, Vite, Google **Inter** font                        |
+| Backend           | Python 3.11+, FastAPI                                                       |
+| AI Orchestration  | LangGraph (`StateGraph`, checkpointed conversation memory)                  |
+| LLM               | Groq API — `openai/gpt-oss-20b` (default), swappable to `openai/gpt-oss-120b` |
+| Database          | MySQL 8+ via SQLAlchemy (SQLite available as a zero-setup fallback)         |
+| ORM               | SQLAlchemy 2.0 (typed, declarative)                                         |
+| Migrations        | Alembic — schema is exclusively migration-managed on MySQL                  |
+| Validation        | Pydantic v2 / pydantic-settings                                             |
 
-## 3. Tech Stack
+> **A note on the LLM models.** The assignment specifies `gemma2-9b-it` (primary) and
+> `llama-3.3-70b-versatile` (fallback). Both have since been retired by Groq — `gemma2-9b-it` in
+> August 2025, and `llama-3.3-70b-versatile` in June 2026 — through no fault of this
+> implementation; both deprecations happened after the assignment was written. `GROQ_MODEL` /
+> `GROQ_FALLBACK_MODEL` are environment variables specifically so a platform-side model retirement
+> like this is a one-line config change, not a code change — `app/agent/llm.py` additionally
+> auto-translates any older model ID at call time as a safety net. Full citations in
+> [`backend/.env.example`](backend/.env.example).
 
-| Layer          | Technology                                             |
-|----------------|---------------------------------------------------------|
-| Frontend       | React 18, Redux Toolkit, Vite, Google Inter font        |
-| Backend        | Python 3.11+, FastAPI                                   |
-| AI Orchestration | LangGraph (`StateGraph`, checkpointed memory)          |
-| LLM            | Groq API — `openai/gpt-oss-20b` (default), swappable to `openai/gpt-oss-120b`. The assignment-specified `gemma2-9b-it` / `llama-3.3-70b-versatile` have since been deprecated by Groq; `app/agent/llm.py` auto-maps them to current equivalents if ever configured. |
-| Database       | MySQL (via `DATABASE_URL`); SQLite by default for zero-setup local runs |
-| ORM            | SQLAlchemy 2.0 (typed, declarative)                      |
-| Migrations     | Alembic (versioned schema changes; see `backend/alembic/README.md`) |
-| Validation     | Pydantic v2 / pydantic-settings                          |
-
-## 4. Folder Structure
+## 5. Project Structure
 
 ```
 aivoa-crm/
 ├── backend/
 │   ├── app/
-│   │   ├── core/            # config.py, logging_config.py
-│   │   ├── db/               # SQLAlchemy engine/session/base
-│   │   ├── models/           # Doctor, Interaction, FollowUp, Product, ChatMessage
-│   │   ├── schemas/          # Pydantic request/response schemas
-│   │   ├── repositories/     # Pure data-access layer (no business logic)
-│   │   ├── services/         # Business logic + serialization (interaction_service.py)
+│   │   ├── core/                 # config.py (env-driven settings), logging_config.py
+│   │   ├── db/                   # SQLAlchemy engine/session/base
+│   │   ├── models/                # Doctor, Interaction, FollowUp, Product, ChatMessage
+│   │   ├── schemas/                # Pydantic request/response contracts
+│   │   ├── repositories/           # Pure data access — no business logic
+│   │   ├── services/                # interaction_service.py — business rules + resolution logic
 │   │   ├── agent/
-│   │   │   ├── state.py      # LangGraph AgentState (TypedDict)
-│   │   │   ├── llm.py        # Configurable Groq client factory
-│   │   │   ├── prompts.py    # System + recommendation prompts
-│   │   │   ├── graph.py      # StateGraph wiring: agent ⇄ tools
-│   │   │   ├── runner.py     # Invokes the graph for one chat turn
-│   │   │   └── tools/        # 5 LangGraph tools (see below)
-│   │   ├── routes/           # chat, interactions, history, followups, recommendations
-│   │   ├── dependencies.py
-│   │   └── main.py           # FastAPI app, CORS, lifespan (DB init)
+│   │   │   ├── state.py            # LangGraph AgentState (TypedDict)
+│   │   │   ├── llm.py              # Configurable Groq client factory + deprecation safety net
+│   │   │   ├── prompts.py          # System + recommendation prompts
+│   │   │   ├── graph.py            # StateGraph wiring: agent ⇄ tools
+│   │   │   ├── runner.py           # Invokes the graph for a single chat turn
+│   │   │   └── tools/              # The 5 LangGraph tools (§7)
+│   │   ├── routes/                 # chat, interactions, history, followups, recommendations
+│   │   ├── main.py                 # FastAPI app, CORS, lifespan, /debug endpoints
+│   │   └── dependencies.py
+│   ├── alembic/                    # Versioned schema migrations (see alembic/README.md)
 │   ├── requirements.txt
 │   └── .env.example
 └── frontend/
     ├── src/
-    │   ├── api/client.js             # Axios wrapper — /chat is the only write path
-    │   ├── redux/
-    │   │   ├── store.js
-    │   │   └── slices/               # interaction, chat, history, ui
+    │   ├── api/client.js            # Axios wrapper — /chat is the only write path
+    │   ├── redux/slices/             # interaction, chat, history, ui
     │   ├── components/
     │   │   ├── Sidebar/, Header/
-    │   │   ├── InteractionPanel/     # AI-controlled, read-only left form
-    │   │   ├── ChatPanel/            # right-side AI Assistant (only interactive surface)
-    │   │   └── common/Toast.jsx
-    │   ├── App.jsx / index.css
-    ├── index.html                    # Google Inter font import
+    │   │   ├── InteractionPanel/      # AI-controlled, read-only left form
+    │   │   ├── ChatPanel/              # the sole interactive surface
+    │   │   ├── BrowsePanel/             # record browser: search, paginate, bulk delete
+    │   │   └── common/
+    │   └── App.jsx / index.css
+    ├── index.html                     # Google Inter font import
     └── package.json
 ```
 
-## 5. Database Design
+## 6. Database Design
 
-- **doctors** (HCPs): `id, name, hospital, specialty, created_at, updated_at`
-- **interactions**: `id, session_id, doctor_id (FK), hospital, specialty, interaction_date,
-  interaction_type, products_discussed, sentiment, brochures_shared, samples_requested,
-  questions_raised, notes, discussion_summary, follow_up_date, created_at, updated_at`
-- **follow_ups**: `id, interaction_id (FK), follow_up_date, notes, status, created_at, updated_at`
-- **products**: `id, name, description` (reference table for product names)
-- **chat_messages**: `id, session_id, role, content, tool_used, created_at` (conversation audit log)
+| Table            | Key Columns                                                                                          |
+|-------------------|--------------------------------------------------------------------------------------------------------|
+| **doctors**        | `id, name, hospital, specialty, created_at, updated_at`                                                |
+| **interactions**   | `id, session_id, doctor_id (FK), hospital, specialty, interaction_date, interaction_type, products_discussed, sentiment, brochures_shared, samples_requested, questions_raised, notes, discussion_summary, follow_up_date` |
+| **follow_ups**     | `id, interaction_id (FK), follow_up_date, notes, status`                                                |
+| **products**       | `id, name, description`                                                                                |
+| **chat_messages**  | `id, session_id, role, content, tool_used, created_at` — full conversation audit trail                 |
 
-Relationships: `Doctor 1—N Interaction`, `Interaction 1—N FollowUp`.
+Relationships: `Doctor 1—N Interaction`, `Interaction 1—N FollowUp` (cascade delete — removing an
+interaction removes its follow-ups).
 
-## 6. LangGraph Workflow
+## 7. The LangGraph Agent & Its 5 Tools
 
-`app/agent/graph.py` builds a two-node `StateGraph` per request (tools are closed over the
-request's DB session and `session_id`):
+`app/agent/graph.py` builds a two-node `StateGraph` per request:
 
 ```
-        ┌────────────────────────────┐
- START ▶│  agent (Groq LLM + tools)  │
-        └──────────────┬─────────────┘
-                        │ tool_calls present?
-              ┌─────────┴─────────┐
-              ▼ yes                ▼ no
-        ┌───────────┐            END
-        │   tools    │
-        └─────┬──────┘
-              │ back to agent for a natural-language reply
-              ▼
-        ┌────────────────────────────┐
-        │  agent (final synthesis)  │
-        └──────────────┬─────────────┘
-                        ▼
-                       END
+ START ▶ agent (Groq LLM + bind_tools) ──tool_calls?──▶ tools ──▶ agent (final reply) ▶ END
+                    │no tool calls                                   ▲
+                    └───────────────────────────────────────────────▶ END
 ```
 
-Conversation memory is checkpointed (`MemorySaver`, keyed by `session_id` as `thread_id`), so the
-agent remembers what it logged earlier in the conversation — which is how "edit interaction"
-requests like *"Actually the doctor's name was Dr. John"* resolve to the correct record without
-the user repeating the interaction ID.
+Conversation memory is checkpointed (`MemorySaver`, keyed by `session_id`), so multi-turn
+corrections like *"actually the doctor's name was Dr. John"* resolve against what was just logged,
+without the rep repeating an ID.
 
-### The Five LangGraph Tools
+| # | Tool | What it does |
+|---|------|----------------|
+| 1 | **`log_interaction`** | Extracts HCP name, hospital, specialty, date, interaction type, products, sentiment, brochure/sample flags, questions, notes, and a short summary from free text; resolves or creates the `Doctor` row; persists the interaction. |
+| 2 | **`edit_interaction`** | Applies a *partial* update to an existing interaction — resolved via `interaction_id`, an HCP name, or the latest interaction in the session, through the shared, disambiguation-aware `resolve_target_interaction()`. Only mentioned fields change. |
+| 3 | **`view_interaction_history`** | Retrieves past interactions filterable by one or more HCP names, hospital, product, sentiment, interaction type, and/or date range. Large result sets return a computed summary (sentiment breakdown, distinct HCPs/products, date range) instead of dumping every row into the model's context. |
+| 4 | **`schedule_followup`** | Creates a `FollowUp` row against a resolved interaction and mirrors the date onto the interaction record so the left panel reflects it immediately. |
+| 5 | **`recommend_next_action`** | Pulls an HCP's interaction history and asks the LLM to reason over sentiment trends, repeated product interest, and sample requests to produce 3–5 concrete, evidence-based recommendations. |
 
-1. **`log_interaction`** — Creates a new interaction. Extracts HCP name, hospital, specialty,
-   date, interaction type, products, sentiment, brochures/samples flags, questions, notes, and a
-   short summary from free text, resolves/creates the `Doctor` record, and persists the row.
-2. **`edit_interaction`** — Applies a partial update to the most recently logged interaction (or
-   an explicit `interaction_id`). Only the fields the rep mentions change; everything else is
-   preserved untouched.
-3. **`view_interaction_history`** — Retrieves past interactions, filterable by HCP name and/or
-   date range, sorted most-recent-first.
-4. **`schedule_followup`** — Creates a `FollowUp` row tied to an interaction (resolved by
-   `interaction_id`, HCP name, or defaulting to the latest interaction in the session), and
-   mirrors the date onto the interaction's `follow_up_date` field.
-5. **`recommend_next_action`** — Pulls an HCP's interaction history and asks the LLM to reason
-   over sentiment trends, repeated product interest, and sample requests to produce 3–5 concrete,
-   evidence-based recommendations (JSON array). Falls back to a small heuristic set only if the
-   LLM call itself fails (e.g. network error), so a bad response never surfaces raw errors to the
-   rep.
+## 8. API Reference
 
-## 7. API Endpoints
+| Method | Path | Purpose |
+|--------|------|----------|
+| `POST` | `/api/v1/chat` | **The** endpoint. Runs one LangGraph agent turn. |
+| `GET`  | `/api/v1/interactions` | Browse/search interactions (filters, pagination) — powers the Browse panel. |
+| `GET`  | `/api/v1/interactions/{id}` | Fetch a single interaction. |
+| `POST` | `/api/v1/interactions` | Direct create (REST completeness; not used by the chat-driven UI). |
+| `PUT`  | `/api/v1/interactions/{id}` | Direct partial update (REST completeness). |
+| `DELETE` | `/api/v1/interactions/{id}` | Delete a single interaction (Browse panel only — never AI-triggerable). |
+| `POST` | `/api/v1/interactions/bulk-delete` | Delete multiple interactions at once. |
+| `GET`  | `/api/v1/history/{doctor}` | Interaction history for a specific HCP. |
+| `POST` | `/api/v1/followup` | Direct follow-up creation. |
+| `POST` | `/api/v1/recommendation` | Direct recommendation call (reuses the exact tool logic). |
+| `GET`  | `/health` | Liveness check. |
+| `GET`  | `/debug/db-health` | Runs a live `SELECT 1`; reports connection status, dialect, pool stats (password redacted). |
+| `GET`  | `/debug/groq-config` | Reports the resolved Groq model/fallback currently active. |
 
-| Method | Path                          | Purpose                                            |
-|--------|-------------------------------|-----------------------------------------------------|
-| POST   | `/api/v1/chat`                 | **Primary endpoint.** Runs one LangGraph agent turn |
-| GET    | `/api/v1/interactions`         | List interactions (read/admin)                     |
-| GET    | `/api/v1/interactions/{id}`    | Get a single interaction                            |
-| POST   | `/api/v1/interactions`         | Direct create (REST completeness; not used by chat UI) |
-| PUT    | `/api/v1/interactions/{id}`    | Direct partial update (REST completeness)           |
-| GET    | `/api/v1/history/{doctor}`     | Interaction history for an HCP                      |
-| POST   | `/api/v1/followup`             | Direct follow-up creation (REST completeness)        |
-| POST   | `/api/v1/recommendation`       | Direct recommendation call (reuses the same tool)    |
-| GET    | `/health`                      | Liveness check                                       |
+Full interactive docs at **`/docs`** once the backend is running.
 
-> **Important:** the frontend's Interaction Details panel is populated *only* from `/chat`
-> responses. The POST/PUT `/interactions` endpoints exist for API completeness and testing, but
-> are intentionally not wired into any "fill the form" UI flow — that would violate the
-> assignment's core requirement.
-
-## 8. Frontend Design Notes
-
-- **Left panel** (`InteractionPanel`): every field renders from Redux state only — there are no
-  `<input>` elements with `onChange` handlers wired to the CRM data. Fields flash briefly (a
-  warm amber highlight) for ~1.8s whenever the AI just wrote to them, so the rep can visually
-  trace what the assistant changed.
-- **Right panel** (`ChatPanel`): the sole interactive surface. Tool results for history and
-  recommendations render as rich cards inline in the conversation (rather than a separate static
-  tab), since in an AI-first product the conversation *is* the interface.
-- **Redux state**: `interaction` (current form + which fields just changed), `chat` (message
-  list, sending status), `history` (last fetched history/recommendations), `ui` (session id,
-  toasts, loading/error).
-- Typography is Google **Inter** throughout, loaded in `index.html`.
-
-## 9. Installation & Running
+## 9. Setup — Any Device, Start to Finish
 
 ### Prerequisites
 - Python 3.11+
 - Node.js 18+
-- A Groq API key — create one free at https://console.groq.com/keys
-- MySQL 8+ (this project's default/demonstrated database — see setup below)
+- MySQL 8+ (this project's database of record)
+- A free Groq API key → https://console.groq.com/keys
 
-### 1. Create the MySQL database
+### Step 1 — Create the database
 
 ```sql
 CREATE DATABASE aivoa_crm CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'aivoa'@'localhost' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON aivoa_crm.* TO 'aivoa'@'localhost';
-FLUSH PRIVILEGES;
 ```
+(Using `root` directly is fine for local/dev use — no need to create a separate MySQL user unless
+you want one.)
 
-(Using the root user directly instead is fine too for local development — just point
-`DATABASE_URL` at whichever credentials you used.)
+### Step 2 — Backend
 
-### 2. Backend setup
+<table>
+<tr><th>macOS / Linux</th><th>Windows (PowerShell)</th></tr>
+<tr valign="top">
+<td>
 
 ```bash
 cd backend
-python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ```
 
+</td>
+<td>
+
+```powershell
+cd backend
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r requirements.txt
+copy .env.example .env
+```
+
+</td>
+</tr>
+</table>
+
 Edit `backend/.env`:
 ```
 GROQ_API_KEY=<your key>
-DATABASE_URL=mysql+pymysql://aivoa:your_password@localhost:3306/aivoa_crm?charset=utf8mb4
+DATABASE_URL=mysql+pymysql://root:<your_password>@127.0.0.1:3306/aivoa_crm?charset=utf8mb4
 ```
-(`PyMySQL` and `cryptography` — needed for MySQL 8's default auth plugin — are already in
-`requirements.txt`, so no extra driver install is needed.)
 
-### 3. Create the schema with Alembic
+> **If your password contains special characters** (`@`, `#`, `%`, `/`, etc.), they must be
+> percent-encoded in the URL — e.g. `@` becomes `%40`. Get the exact encoded value with:
+> ```bash
+> python -c "from urllib.parse import quote_plus; print(quote_plus('your_password'))"
+> ```
 
-MySQL's schema is owned entirely by Alembic in this project (see `app/db/session.py` —
-`create_all()` deliberately only runs for the SQLite fallback, so there's a single source of
-truth for schema on a real database):
+### Step 3 — Create the schema
 
 ```bash
-# still inside backend/, venv active
 alembic revision --autogenerate -m "initial schema"
 alembic upgrade head
 ```
+Open the generated file under `alembic/versions/` and skim it before running `upgrade` — first
+migration, worth a quick sanity check. See `backend/alembic/README.md` for the ongoing workflow.
 
-Open the generated file under `alembic/versions/` and skim it before running `upgrade` — it's
-the first migration, so it's worth a quick sanity check. See `backend/alembic/README.md` for the
-full workflow (what to run whenever a model changes afterward).
-
-### 4. Start the backend and verify the connection
+### Step 4 — Start the backend
 
 ```bash
 uvicorn app.main:app --reload --port 8000
 ```
 
-Open `http://localhost:8000/debug/db-health` — it runs a real `SELECT 1` against MySQL and
-reports the connection status, dialect, and pool stats (password always redacted). Confirm you
-see `"connection_status": "ok"` and `"dialect": "mysql"` before moving on. If it's not `"ok"`,
-the error message there tells you exactly what's wrong (wrong password, database doesn't exist,
-etc.) without needing to dig through logs.
-
-### No MySQL available? (fallback for quick frontend-only demos)
-
-Set `DATABASE_URL=sqlite:///./aivoa_crm.db` in `.env` instead, skip the Alembic step entirely
-(tables are auto-created on startup), and start uvicorn directly. This project is built and
-tested against MySQL per the assignment, but SQLite remains available so the UI/agent can still
-be exercised with zero external setup.
-
-Connection pooling (`pool_recycle=1800`, `pool_pre_ping=True`) is already tuned in
-`app/db/session.py` specifically to avoid the classic "MySQL server has gone away" error
-that shows up when a pooled connection sits idle past MySQL's timeout.
-
-### Frontend
+### Step 5 — Frontend
 
 ```bash
 cd frontend
 npm install
-cp .env.example .env   # defaults already point at localhost:8000
+cp .env.example .env      # Windows: copy .env.example .env
 npm run dev
 ```
 
-Open `http://localhost:5173`.
+Open **http://localhost:5173**.
 
-### Groq API Setup
+## 10. Verifying Everything Works
 
-1. Go to https://console.groq.com/keys and create a new API key.
-2. Paste it into `backend/.env` as `GROQ_API_KEY`.
-3. Default model is `openai/gpt-oss-20b`. See the note below for why this differs from the
-   assignment's originally-specified model names.
+Before assuming anything is broken, check these two URLs — between them they answer almost every
+"is it my setup or the code" question:
 
-### Note on Model Selection (read before assuming this is a deviation)
+- **`http://localhost:8000/debug/db-health`** → expect `"connection_status": "ok"`, `"dialect": "mysql"`.
+- **`http://localhost:8000/debug/groq-config`** → confirms which Groq model is actually active.
 
-The assignment specifies `gemma2-9b-it` as the primary model and `llama-3.3-70b-versatile` as
-context/fallback. Both are, as of this submission, retired from Groq's platform:
+## 11. A 60-Second Guided Demo
 
-- **Aug 8, 2025** — Groq deprecated `gemma2-9b-it`, recommending `llama-3.1-8b-instant` as the
-  direct replacement.
-- **Jun 17, 2026** — Groq deprecated `llama-3.1-8b-instant` *and* `llama-3.3-70b-versatile`
-  together, recommending `openai/gpt-oss-20b` and `openai/gpt-oss-120b` respectively.
-  (See https://console.groq.com/docs/deprecations for Groq's current list.)
-
-So the exact model names in the assignment are unavailable through no fault of the
-implementation — both retirements happened after the assignment was written, and the second
-happened after `gemma2-9b-it`'s own replacement was also retired. `openai/gpt-oss-20b` /
-`openai/gpt-oss-120b` are Groq's own current official recommendations, not an arbitrary
-substitution.
-
-This is exactly why `GROQ_MODEL` / `GROQ_FALLBACK_MODEL` are environment variables rather than
-hardcoded strings, and why `app/agent/llm.py` additionally auto-translates any older/deprecated
-model ID at call time as a safety net (`_resolve_model()`): the architecture was built so that a
-platform-side model retirement — which is entirely outside this project's control and will happen
-again — never requires a code change, only a config value (or, worst case, one line in a mapping
-dict).
-
-## 10. Example Interactions to Try
+Paste these into the AI Assistant chat, in order, to exercise all five tools plus the
+Browse/delete flow:
 
 ```
-"Today I met Dr. Smith at City Hospital and discussed Product X efficacy.
- The sentiment was positive and I shared brochures."
+1. "Today I met Dr. Smith at City Hospital and discussed Product X efficacy.
+    The sentiment was positive and I shared brochures."
+    → log_interaction: left panel populates automatically.
 
-"Sorry, the doctor's name was actually Dr. John and the sentiment was negative."
+2. "Sorry, the sentiment was actually negative, not positive."
+    → edit_interaction: only that field changes.
 
-"Show me the history for Dr. John"
+3. "Show me the history for Dr. Smith"
+    → view_interaction_history: recent interactions render as a chat card.
 
-"Schedule a follow-up with Dr. John for next Friday to discuss the new dosing study."
+4. "Schedule a follow-up with Dr. Smith for next Friday to discuss the new dosing study."
+    → schedule_followup: follow-up date appears in the left panel.
 
-"What should I do next with Dr. John?"
+5. "What should I do next with Dr. Smith?"
+    → recommend_next_action: LLM-reasoned suggestions based on the history above.
 ```
 
-## 11. Screenshots
+Then open the **Browse** view in the sidebar, select one or more records, and delete them — note
+that this is a direct UI action, not something achievable through the chat.
 
-_Add screenshots of the running application here before submission:_
-- `docs/screenshot-log-interaction.png`
-- `docs/screenshot-edit-interaction.png`
-- `docs/screenshot-history.png`
-- `docs/screenshot-recommendations.png`
+## 12. Engineering Decisions Worth Noting
 
-## 12. Future Improvements
+- **`resolve_target_interaction()`** (`interaction_service.py`) is the single choke point every
+  mutating tool (`edit_interaction`, `schedule_followup`) goes through to figure out *which*
+  interaction a natural-language message refers to. It tries, in order: an explicit
+  `interaction_id`, then a tiered doctor-name match (exact → prefix → substring), and only falls
+  back to "latest in this session" if neither is given. Zero or multiple name matches return an
+  explicit `not_found`/`ambiguous` status for the agent to ask about — never a silent guess.
+- **Deletion is REST-only.** `bulk-delete` and `DELETE /interactions/{id}` are not registered as
+  LangGraph tools, so no phrasing of a chat message can trigger a delete.
+- **MySQL-safe ordering.** `_date_desc_nulls_last()` in `interaction_repository.py` replaces
+  SQLAlchemy's `.nullslast()` (which MySQL's parser rejects outright) with a portable
+  `CASE WHEN date IS NULL THEN 1 ELSE 0 END` expression, so sort behavior is identical across
+  MySQL, Postgres, and SQLite.
+- **Schema ownership.** `init_db()` in `app/db/session.py` only calls `create_all()` for the
+  SQLite fallback path. On MySQL, it deliberately does nothing — Alembic is the only thing
+  permitted to create or alter tables there, so there is exactly one source of truth for schema.
 
-- Persistent LangGraph checkpointer (e.g. `PostgresSaver`) instead of in-memory, so conversation
-  memory survives a backend restart.
-- Multi-user auth (`Users` table is modeled as optional per the assignment) with per-rep session
-  scoping instead of a browser-generated session id.
-- Voice-note-to-text capture (referenced in the assignment's screenshot) feeding straight into
-  `log_interaction`.
-- Streaming token-by-token responses over SSE/WebSocket for a more responsive chat feel.
-- Alembic migrations in place of `create_all` for production schema management.
+## 13. Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| `model_decommissioned` error from Groq | Assignment-specified model retired by Groq | Set `GROQ_MODEL=openai/gpt-oss-20b` in `.env` (already the default) |
+| Alembic: `invalid interpolation syntax in '...%...'` | `configparser` treats `%` specially; a percent-encoded password (`%40`) trips it | Already handled in `alembic/env.py` (escapes `%` → `%%` before passing to Alembic config) |
+| Alembic: `Can't locate timezone: UTC` | Windows lacks a built-in IANA timezone DB; Alembic's `timezone =` setting needs it | Already removed from `alembic.ini` — cosmetic setting only, no functional effect |
+| Alembic: `Can't locate revision identified by '...'` | MySQL's `alembic_version` table remembers a migration that no longer exists on disk (e.g. after swapping project folders) | Drop & recreate the database, delete stray files in `alembic/versions/`, regenerate |
+| `1064 ... near 'NULLS LAST'` | MySQL doesn't support `NULLS LAST` syntax; a SQLAlchemy `.nullslast()` call slipped back in | Already fixed in `interaction_repository.py` via `_date_desc_nulls_last()` — see §12 |
+| Chat shows "couldn't reach the CRM backend" | CORS/port mismatch, or backend not actually running | Check `/health` loads directly in a browser; confirm frontend's Vite port matches `CORS_ORIGINS` in `.env` |
+
+## 14. Known Limitations & Roadmap
+
+- Conversation memory uses `MemorySaver` (in-process); a restart clears it. A persistent
+  checkpointer (e.g. `PostgresSaver`) would carry it across restarts.
+- Single implicit "rep" per browser session rather than real multi-user auth — `Users` is modeled
+  as optional per the assignment.
+- No mechanism yet to *explicitly clear* a field via chat (e.g. "remove the follow-up date") —
+  today's `edit_interaction` only sets new values, it can't null one out. Next on the list.
+- Voice-note capture (shown in the assignment's reference screenshot) is not yet implemented.
 
 ---
 
+<div align="center">
+
 Built as a production-quality reference implementation of an AI-first, LangGraph-orchestrated CRM
-workflow for the AIVOA technical assessment.
+workflow.
+
+</div>
